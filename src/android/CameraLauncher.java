@@ -234,10 +234,17 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
     //--------------------------------------------------------------------------
 
     private String getTempDirectoryPath() {
-        File cache = cordova.getActivity().getCacheDir();
-        // Create the cache directory if it doesn't exist
-        cache.mkdirs();
-        return cache.getAbsolutePath();
+        try {
+            File cache = cordova.getActivity().getCacheDir();
+            LOG.d(LOG_TAG, "Cache directory: " + cache.getAbsolutePath());
+            // Create the cache directory if it doesn't exist
+            boolean created = cache.mkdirs();
+            LOG.d(LOG_TAG, "Cache directory mkdirs result: " + created + ", exists: " + cache.exists());
+            return cache.getAbsolutePath();
+        } catch (Exception e) {
+            LOG.e(LOG_TAG, "Error getting temp directory path: " + e.getMessage(), e);
+            throw e;
+        }
     }
 
     /**
@@ -255,9 +262,27 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
      * @param encodingType           Compression quality hint (0-100: 0=low quality & high compression, 100=compress of max quality)
      */
     public void callTakePicture(int returnType, int encodingType) {
+        LOG.d(LOG_TAG, "callTakePicture started - returnType: " + returnType + ", encodingType: " + encodingType);
+        
+        // Check if cordova context is still valid
+        if (cordova == null) {
+            LOG.e(LOG_TAG, "Cordova context is null in callTakePicture");
+            this.failPicture("Cordova context unavailable");
+            return;
+        }
+        
+        if (cordova.getActivity() == null) {
+            LOG.e(LOG_TAG, "Cordova activity is null in callTakePicture");
+            this.failPicture("Activity unavailable");
+            return;
+        }
+        
+        LOG.d(LOG_TAG, "Checking permissions...");
         boolean saveAlbumPermission = PermissionHelper.hasPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
                 && PermissionHelper.hasPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
         boolean takePicturePermission = PermissionHelper.hasPermission(this, Manifest.permission.CAMERA);
+        
+        LOG.d(LOG_TAG, "Initial permission check - camera: " + takePicturePermission + ", storage: " + saveAlbumPermission);
 
         // CB-10120: The CAMERA permission does not need to be requested unless it is declared
         // in AndroidManifest.xml. This plugin does not declare it, but others may and so we must
@@ -266,65 +291,177 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
         if (!takePicturePermission) {
             takePicturePermission = true;
             try {
+                LOG.d(LOG_TAG, "Checking manifest for camera permission...");
                 PackageManager packageManager = this.cordova.getActivity().getPackageManager();
                 String[] permissionsInPackage = packageManager.getPackageInfo(this.cordova.getActivity().getPackageName(), PackageManager.GET_PERMISSIONS).requestedPermissions;
                 if (permissionsInPackage != null) {
+                    LOG.d(LOG_TAG, "Found " + permissionsInPackage.length + " permissions in manifest");
                     for (String permission : permissionsInPackage) {
                         if (permission.equals(Manifest.permission.CAMERA)) {
+                            LOG.d(LOG_TAG, "Camera permission found in manifest, setting takePicturePermission to false");
                             takePicturePermission = false;
                             break;
                         }
                     }
+                } else {
+                    LOG.d(LOG_TAG, "No permissions found in package info");
                 }
             } catch (NameNotFoundException e) {
+                LOG.e(LOG_TAG, "Package not found exception: " + e.getMessage(), e);
                 // We are requesting the info for our package, so this should
                 // never be caught
+            } catch (Exception e) {
+                LOG.e(LOG_TAG, "Unexpected error checking package permissions: " + e.getMessage(), e);
             }
         }
+        
+        LOG.d(LOG_TAG, "Final permission check - camera: " + takePicturePermission + ", storage: " + saveAlbumPermission);
 
-        if (takePicturePermission && saveAlbumPermission) {
-            takePicture(returnType, encodingType);
-        } else if (saveAlbumPermission) {
-            PermissionHelper.requestPermission(this, TAKE_PIC_SEC, Manifest.permission.CAMERA);
-        } else if (takePicturePermission) {
-            PermissionHelper.requestPermissions(this, TAKE_PIC_SEC,
-                    new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE});
-        } else {
-            PermissionHelper.requestPermissions(this, TAKE_PIC_SEC, permissions);
+        try {
+            if (takePicturePermission && saveAlbumPermission) {
+                LOG.d(LOG_TAG, "All permissions granted, calling takePicture");
+                takePicture(returnType, encodingType);
+            } else if (saveAlbumPermission) {
+                LOG.d(LOG_TAG, "Requesting camera permission");
+                PermissionHelper.requestPermission(this, TAKE_PIC_SEC, Manifest.permission.CAMERA);
+            } else if (takePicturePermission) {
+                LOG.d(LOG_TAG, "Requesting storage permissions");
+                PermissionHelper.requestPermissions(this, TAKE_PIC_SEC,
+                        new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE});
+            } else {
+                LOG.d(LOG_TAG, "Requesting all permissions");
+                PermissionHelper.requestPermissions(this, TAKE_PIC_SEC, permissions);
+            }
+        } catch (Exception e) {
+            LOG.e(LOG_TAG, "Exception in callTakePicture permission handling: " + e.getMessage(), e);
+            this.failPicture("Error handling permissions: " + e.getMessage());
         }
+        
+        LOG.d(LOG_TAG, "callTakePicture completed");
     }
 
     public void takePicture(int returnType, int encodingType)
     {
+        LOG.d(LOG_TAG, "=== takePicture method started ===");
+        LOG.d(LOG_TAG, "Thread: " + Thread.currentThread().getName() + " (ID: " + Thread.currentThread().getId() + ")");
+        LOG.d(LOG_TAG, "Return type: " + returnType + ", Encoding type: " + encodingType);
+        LOG.d(LOG_TAG, "Application ID: " + applicationId);
+        
+        // Memory check
+        Runtime runtime = Runtime.getRuntime();
+        long maxMemory = runtime.maxMemory();
+        long totalMemory = runtime.totalMemory();
+        long freeMemory = runtime.freeMemory();
+        long usedMemory = totalMemory - freeMemory;
+        LOG.d(LOG_TAG, String.format("Memory status - Max: %d MB, Used: %d MB, Free: %d MB", 
+            maxMemory / (1024 * 1024), usedMemory / (1024 * 1024), freeMemory / (1024 * 1024)));
+        
+        // State validation
+        if (this.callbackContext == null) {
+            LOG.e(LOG_TAG, "CallbackContext is null!");
+            return;
+        }
+        
+        if (this.cordova == null) {
+            LOG.e(LOG_TAG, "Cordova is null!");
+            this.failPicture("Cordova context unavailable");
+            return;
+        }
+        
+        if (this.cordova.getActivity() == null) {
+            LOG.e(LOG_TAG, "Cordova activity is null!");
+            this.failPicture("Activity unavailable");
+            return;
+        }
+        
+        if (this.applicationId == null || this.applicationId.isEmpty()) {
+            LOG.e(LOG_TAG, "Application ID is null or empty!");
+            this.failPicture("Application ID not available");
+            return;
+        }
+        
         // Save the number of images currently on disk for later
-        this.numPics = queryImgDB(whichContentStore()).getCount();
+        try {
+            this.numPics = queryImgDB(whichContentStore()).getCount();
+            LOG.d(LOG_TAG, "Current image count: " + this.numPics);
+        } catch (Exception e) {
+            LOG.e(LOG_TAG, "Error querying image database: " + e.getMessage(), e);
+            this.numPics = 0;
+        }
 
         LOG.d(LOG_TAG, "Taking a picture");
+        
         // Let's use the intent and see what happens
         Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        LOG.d(LOG_TAG, "Created camera intent");
 
-        // Specify file so that large image is captured and returned
-        File photo = createCaptureFile(encodingType);
-        this.imageFilePath = photo.getAbsolutePath();
-        this.imageUri = FileProvider.getUriForFile(cordova.getActivity(),
-                applicationId + ".cordova.plugin.camera.provider",
-                photo);
-        intent.putExtra(MediaStore.EXTRA_OUTPUT, imageUri);
-        //We can write to this URI, this will hopefully allow us to write files to get to the next step
-        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            // Specify file so that large image is captured and returned
+            File photo = createCaptureFile(encodingType);
+            this.imageFilePath = photo.getAbsolutePath();
+            LOG.d(LOG_TAG, "Created capture file: " + this.imageFilePath);
+            
+            // Check if file was created successfully
+            if (!photo.getParentFile().exists()) {
+                LOG.w(LOG_TAG, "Parent directory does not exist: " + photo.getParentFile().getAbsolutePath());
+            }
+            
+            this.imageUri = FileProvider.getUriForFile(cordova.getActivity(),
+                    applicationId + ".cordova.plugin.camera.provider",
+                    photo);
+            LOG.d(LOG_TAG, "Created FileProvider URI: " + this.imageUri.toString());
+            
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, imageUri);
+            //We can write to this URI, this will hopefully allow us to write files to get to the next step
+            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            LOG.d(LOG_TAG, "Intent configured with output URI and permissions");
+        } catch (IllegalArgumentException e) {
+            LOG.e(LOG_TAG, "IllegalArgumentException creating FileProvider URI: " + e.getMessage(), e);
+            this.failPicture("FileProvider configuration error: " + e.getMessage());
+            return;
+        } catch (SecurityException e) {
+            LOG.e(LOG_TAG, "SecurityException creating FileProvider URI: " + e.getMessage(), e);
+            this.failPicture("Security error accessing FileProvider: " + e.getMessage());
+            return;
+        } catch (Exception e) {
+            LOG.e(LOG_TAG, "Error creating capture file or FileProvider URI: " + e.getMessage(), e);
+            this.failPicture("Error setting up camera capture: " + e.getMessage());
+            return;
+        }
 
         if (this.cordova != null) {
-            // Let's check to make sure the camera is actually installed. (Legacy Nexus 7 code)
-            PackageManager mPm = this.cordova.getActivity().getPackageManager();
-            if(intent.resolveActivity(mPm) != null)
-            {
-                this.cordova.startActivityForResult((CordovaPlugin) this, intent, (CAMERA + 1) * 16 + returnType + 1);
+            try {
+                // Let's check to make sure the camera is actually installed. (Legacy Nexus 7 code)
+                PackageManager mPm = this.cordova.getActivity().getPackageManager();
+                if(intent.resolveActivity(mPm) != null)
+                {
+                    LOG.d(LOG_TAG, "Camera intent resolved, starting activity");
+                    int requestCode = (CAMERA + 1) * 16 + returnType + 1;
+                    LOG.d(LOG_TAG, "Using request code: " + requestCode);
+                    this.cordova.startActivityForResult((CordovaPlugin) this, intent, requestCode);
+                    LOG.d(LOG_TAG, "Camera activity started successfully");
+                }
+                else
+                {
+                    LOG.e(LOG_TAG, "Error: You don't have a default camera. Your device may not be CTS compliant.");
+                    this.failPicture("No camera application available");
+                }
+            } catch (SecurityException e) {
+                LOG.e(LOG_TAG, "SecurityException starting camera activity: " + e.getMessage(), e);
+                this.failPicture("Security error starting camera: " + e.getMessage());
+            } catch (ActivityNotFoundException e) {
+                LOG.e(LOG_TAG, "ActivityNotFoundException starting camera: " + e.getMessage(), e);
+                this.failPicture("Camera activity not found: " + e.getMessage());
+            } catch (Exception e) {
+                LOG.e(LOG_TAG, "Error starting camera activity: " + e.getMessage(), e);
+                this.failPicture("Error starting camera: " + e.getMessage());
             }
-            else
-            {
-                LOG.d(LOG_TAG, "Error: You don't have a default camera.  Your device may not be CTS complaint.");
-            }
+        } else {
+            LOG.e(LOG_TAG, "ERROR: Cordova interface is null");
+            this.failPicture("Cordova interface not available");
         }
+        
+        LOG.d(LOG_TAG, "=== takePicture method completed ===");
 //        else
 //            LOG.d(LOG_TAG, "ERROR: You must use the CordovaInterface for this to work correctly. Please implement it in your activity");
     }
@@ -347,6 +484,8 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
      * @return a File object pointing to the temporary picture
      */
     private File createCaptureFile(int encodingType, String fileName) {
+        LOG.d(LOG_TAG, "Creating capture file with encoding type: " + encodingType + ", fileName: " + fileName);
+        
         if (fileName.isEmpty()) {
             fileName = ".Pic";
         }
@@ -360,7 +499,12 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
             throw new IllegalArgumentException("Invalid Encoding Type: " + encodingType);
         }
 
-        return new File(getTempDirectoryPath(), fileName);
+        String tempPath = getTempDirectoryPath();
+        LOG.d(LOG_TAG, "Temp directory path: " + tempPath);
+        File captureFile = new File(tempPath, fileName);
+        LOG.d(LOG_TAG, "Final capture file path: " + captureFile.getAbsolutePath());
+        
+        return captureFile;
     }
 
 
@@ -813,18 +957,29 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
      * @param intent      An Intent, which can return result data to the caller (various data can be attached to Intent "extras").
      */
     public void onActivityResult(int requestCode, int resultCode, Intent intent) {
+        LOG.d(LOG_TAG, "=== onActivityResult called ===");
+        LOG.d(LOG_TAG, "Request code: " + requestCode + ", Result code: " + resultCode);
+        LOG.d(LOG_TAG, "Intent is null: " + (intent == null));
+        
+        if (this.callbackContext == null) {
+            LOG.e(LOG_TAG, "CallbackContext is null in onActivityResult!");
+            return;
+        }
 
         // Get src and dest types from request code for a Camera Activity
         int srcType = (requestCode / 16) - 1;
         int destType = (requestCode % 16) - 1;
+        LOG.d(LOG_TAG, "Calculated srcType: " + srcType + ", destType: " + destType);
 
-        // If Camera Crop
-        if (requestCode >= CROP_CAMERA) {
-            if (resultCode == Activity.RESULT_OK) {
+        try {
+            // If Camera Crop
+            if (requestCode >= CROP_CAMERA) {
+                LOG.d(LOG_TAG, "Processing crop camera result");
+                if (resultCode == Activity.RESULT_OK) {
 
-                // Because of the inability to pass through multiple intents, this hack will allow us
-                // to pass arcane codes back.
-                destType = requestCode - CROP_CAMERA;
+                    // Because of the inability to pass through multiple intents, this hack will allow us
+                    // to pass arcane codes back.
+                    destType = requestCode - CROP_CAMERA;
                 try {
                     processResultFromCamera(destType, intent);
                 } catch (IOException e) {
@@ -841,29 +996,43 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
             else {
                 this.failPicture("Did not complete!");
             }
-        }
-        // If CAMERA
-        else if (srcType == CAMERA) {
-            // If image available
-            if (resultCode == Activity.RESULT_OK) {
-                try {
-                    if (this.allowEdit) {
-                        Uri tmpFile = FileProvider.getUriForFile(cordova.getActivity(),
-                                applicationId + ".cordova.plugin.camera.provider",
-                                createCaptureFile(this.encodingType));
-                        performCrop(tmpFile, destType, intent);
-                    } else {
-                        this.processResultFromCamera(destType, intent);
+            // If CAMERA
+            else if (srcType == CAMERA) {
+                LOG.d(LOG_TAG, "Processing camera result");
+                // If image available
+                if (resultCode == Activity.RESULT_OK) {
+                    LOG.d(LOG_TAG, "Camera result OK, allowEdit: " + this.allowEdit);
+                    try {
+                        if (this.allowEdit) {
+                            LOG.d(LOG_TAG, "Creating temp file for crop");
+                            Uri tmpFile = FileProvider.getUriForFile(cordova.getActivity(),
+                                    applicationId + ".cordova.plugin.camera.provider",
+                                    createCaptureFile(this.encodingType));
+                            LOG.d(LOG_TAG, "Performing crop with temp file: " + tmpFile);
+                            performCrop(tmpFile, destType, intent);
+                        } else {
+                            LOG.d(LOG_TAG, "Processing camera result without crop");
+                            this.processResultFromCamera(destType, intent);
+                        }
+                    } catch (IllegalArgumentException e) {
+                        LOG.e(LOG_TAG, "IllegalArgumentException in camera result processing: " + e.getMessage(), e);
+                        this.failPicture("FileProvider error: " + e.getMessage());
+                    } catch (SecurityException e) {
+                        LOG.e(LOG_TAG, "SecurityException in camera result processing: " + e.getMessage(), e);
+                        this.failPicture("Security error: " + e.getMessage());
+                    } catch (IOException e) {
+                        LOG.e(LOG_TAG, "IOException in camera result processing: " + e.getMessage(), e);
+                        this.failPicture("Error capturing image: "+e.getLocalizedMessage());
+                    } catch (Exception e) {
+                        LOG.e(LOG_TAG, "Unexpected exception in camera result processing: " + e.getMessage(), e);
+                        this.failPicture("Unexpected error: " + e.getMessage());
                     }
-                } catch (IOException e) {
-                    e.printStackTrace();
-                    this.failPicture("Error capturing image: "+e.getLocalizedMessage());
                 }
-            }
 
-            // If cancelled
-            else if (resultCode == Activity.RESULT_CANCELED) {
-                this.failPicture("No Image Selected");
+                // If cancelled
+                else if (resultCode == Activity.RESULT_CANCELED) {
+                    LOG.d(LOG_TAG, "Camera result cancelled");
+                    this.failPicture("No Image Selected");
             }
 
             // If something else
@@ -898,6 +1067,13 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
             }
             this.pendingDeleteMediaUri = null;
         }
+        
+        } catch (Exception e) {
+            LOG.e(LOG_TAG, "Unexpected exception in onActivityResult: " + e.getMessage(), e);
+            this.failPicture("Unexpected error in activity result: " + e.getMessage());
+        }
+        
+        LOG.d(LOG_TAG, "=== onActivityResult completed ===");
     }
 
     private int exifToDegrees(int exifOrientation) {
@@ -1366,19 +1542,43 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
 
     public void onRequestPermissionResult(int requestCode, String[] permissions,
                                           int[] grantResults) {
+        LOG.d(LOG_TAG, "onRequestPermissionResult called - requestCode: " + requestCode);
+        LOG.d(LOG_TAG, "Permissions requested: " + java.util.Arrays.toString(permissions));
+        LOG.d(LOG_TAG, "Grant results: " + java.util.Arrays.toString(grantResults));
+        
+        if (grantResults.length == 0) {
+            LOG.e(LOG_TAG, "Grant results array is empty");
+            this.callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.ERROR, PERMISSION_DENIED_ERROR));
+            return;
+        }
+        
         for (int r : grantResults) {
             if (r == PackageManager.PERMISSION_DENIED) {
+                LOG.e(LOG_TAG, "Permission denied");
                 this.callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.ERROR, PERMISSION_DENIED_ERROR));
                 return;
             }
         }
-        switch (requestCode) {
-            case TAKE_PIC_SEC:
-                takePicture(this.destType, this.encodingType);
-                break;
-            case SAVE_TO_ALBUM_SEC:
-                this.getImage(this.srcType, this.destType);
-                break;
+        
+        LOG.d(LOG_TAG, "All permissions granted, processing request code: " + requestCode);
+        
+        try {
+            switch (requestCode) {
+                case TAKE_PIC_SEC:
+                    LOG.d(LOG_TAG, "Calling takePicture after permission grant - destType: " + this.destType + ", encodingType: " + this.encodingType);
+                    takePicture(this.destType, this.encodingType);
+                    break;
+                case SAVE_TO_ALBUM_SEC:
+                    LOG.d(LOG_TAG, "Calling getImage after permission grant - srcType: " + this.srcType + ", destType: " + this.destType);
+                    this.getImage(this.srcType, this.destType);
+                    break;
+                default:
+                    LOG.w(LOG_TAG, "Unknown request code in permission result: " + requestCode);
+                    break;
+            }
+        } catch (Exception e) {
+            LOG.e(LOG_TAG, "Exception in onRequestPermissionResult: " + e.getMessage(), e);
+            this.failPicture("Error after permission grant: " + e.getMessage());
         }
     }
 
