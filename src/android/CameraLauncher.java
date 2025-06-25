@@ -995,8 +995,7 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
                 else {
                     this.failPicture("Did not complete!");
                 }
-            }
-            // If CAMERA
+            }// If CAMERA
             else if (srcType == CAMERA) {
                 LOG.d(LOG_TAG, "Processing camera result");
                 // If image available
