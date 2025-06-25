@@ -980,21 +980,21 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
                     // Because of the inability to pass through multiple intents, this hack will allow us
                     // to pass arcane codes back.
                     destType = requestCode - CROP_CAMERA;
-                try {
-                    processResultFromCamera(destType, intent);
-                } catch (IOException e) {
-                    e.printStackTrace();
-                    LOG.e(LOG_TAG, "Unable to write to file");
+                    try {
+                        processResultFromCamera(destType, intent);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                        LOG.e(LOG_TAG, "Unable to write to file");
+                    }
+
+                }// If cancelled
+                else if (resultCode == Activity.RESULT_CANCELED) {
+                    this.failPicture("No Image Selected");
                 }
-
-            }// If cancelled
-            else if (resultCode == Activity.RESULT_CANCELED) {
-                this.failPicture("No Image Selected");
-            }
-
-            // If something else
-            else {
-                this.failPicture("Did not complete!");
+                // If something else
+                else {
+                    this.failPicture("Did not complete!");
+                }
             }
             // If CAMERA
             else if (srcType == CAMERA) {
@@ -1027,47 +1027,42 @@ public class CameraLauncher extends CordovaPlugin implements MediaScannerConnect
                         LOG.e(LOG_TAG, "Unexpected exception in camera result processing: " + e.getMessage(), e);
                         this.failPicture("Unexpected error: " + e.getMessage());
                     }
-                }
-
-                // If cancelled
+                }// If cancelled
                 else if (resultCode == Activity.RESULT_CANCELED) {
                     LOG.d(LOG_TAG, "Camera result cancelled");
                     this.failPicture("No Image Selected");
+                }// If something else
+                else {
+                    this.failPicture("Did not complete!");
+                }
             }
-
-            // If something else
-            else {
-                this.failPicture("Did not complete!");
+            // If retrieving photo from library
+            else if ((srcType == PHOTOLIBRARY) || (srcType == SAVEDPHOTOALBUM)) {
+                if (resultCode == Activity.RESULT_OK && intent != null) {
+                    final Intent i = intent;
+                    final int finalDestType = destType;
+                    cordova.getThreadPool().execute(new Runnable() {
+                        public void run() {
+                            processResultFromGallery(finalDestType, i);
+                        }
+                    });
+                } else if (resultCode == Activity.RESULT_CANCELED) {
+                    this.failPicture("No Image Selected");
+                } else {
+                    this.failPicture("Selection did not complete!");
+                }
+            } else if(requestCode == RECOVERABLE_DELETE_REQUEST) {
+                LOG.d(LOG_TAG, "Retrying media store deletion");
+                // retry media store deletion ...
+                ContentResolver contentResolver = this.cordova.getActivity().getContentResolver();
+                try {
+                    contentResolver.delete(this.pendingDeleteMediaUri, null, null);
+                    LOG.d(LOG_TAG, "Retrying media store deletion - success");
+                } catch (Exception e) {
+                    LOG.e(LOG_TAG, "Unable to delete media store file after permission was granted");
+                }
+                this.pendingDeleteMediaUri = null;
             }
-        }
-        // If retrieving photo from library
-        else if ((srcType == PHOTOLIBRARY) || (srcType == SAVEDPHOTOALBUM)) {
-            if (resultCode == Activity.RESULT_OK && intent != null) {
-                final Intent i = intent;
-                final int finalDestType = destType;
-                cordova.getThreadPool().execute(new Runnable() {
-                    public void run() {
-                        processResultFromGallery(finalDestType, i);
-                    }
-                });
-            } else if (resultCode == Activity.RESULT_CANCELED) {
-                this.failPicture("No Image Selected");
-            } else {
-                this.failPicture("Selection did not complete!");
-            }
-        } else if(requestCode == RECOVERABLE_DELETE_REQUEST) {
-            LOG.d(LOG_TAG, "Retrying media store deletion");
-            // retry media store deletion ...
-            ContentResolver contentResolver = this.cordova.getActivity().getContentResolver();
-            try {
-                contentResolver.delete(this.pendingDeleteMediaUri, null, null);
-                LOG.d(LOG_TAG, "Retrying media store deletion - success");
-            } catch (Exception e) {
-                LOG.e(LOG_TAG, "Unable to delete media store file after permission was granted");
-            }
-            this.pendingDeleteMediaUri = null;
-        }
-        
         } catch (Exception e) {
             LOG.e(LOG_TAG, "Unexpected exception in onActivityResult: " + e.getMessage(), e);
             this.failPicture("Unexpected error in activity result: " + e.getMessage());
